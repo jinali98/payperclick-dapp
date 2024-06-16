@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { authMiddleware } from "../middlewares/auth-middleware";
+import { createTaskInputType } from "../types";
 const prismaClient = new PrismaClient();
 
 const creatorRouter = Router();
@@ -40,6 +41,7 @@ creatorRouter.post("/connect", async (req: Request, res: Response) => {
     return res.status(500).json({ error: message });
   }
 });
+
 creatorRouter.get(
   "/pre-signed-url",
   authMiddleware,
@@ -58,6 +60,84 @@ creatorRouter.get(
 
       const url = await getSignedUrl(client, command, { expiresIn: 3600 });
       return res.json({ url });
+    } catch (err) {
+      console.log(err);
+      const message = err instanceof Error ? err.message : "An error occurred";
+      return res.status(500).json({ error: message });
+    }
+  }
+);
+
+creatorRouter.get(
+  "/task/:id",
+  authMiddleware,
+  async (req: Request & { userid?: string }, res: Response) => {
+    try {
+      const userid = req?.userid;
+      const taskid = parseInt(req.params.id);
+
+      const task = await prismaClient.task.findFirst({
+        where: {
+          id: taskid,
+          creator_id: parseInt(userid!),
+        },
+        include: {
+          options: true,
+          submissions: true,
+        },
+      });
+
+      return res.json({ success: true, data: task });
+    } catch (err) {
+      console.log(err);
+      const message = err instanceof Error ? err.message : "An error occurred";
+      return res.status(500).json({ error: message });
+    }
+  }
+);
+
+creatorRouter.post(
+  "/task",
+  authMiddleware,
+  async (req: Request & { userid?: string }, res: Response) => {
+    try {
+      const userid = req?.userid;
+
+      const validatedInput = createTaskInputType.safeParse(req.body);
+
+      if (!validatedInput.success) {
+        return res.status(400).json({
+          error: validatedInput.error.issues,
+        });
+      }
+
+      const createTaskTx = await prismaClient.$transaction(async (tx) => {
+        const createTaskResponse = await tx.task.create({
+          data: {
+            title: validatedInput.data.title,
+            creator_id: parseInt(userid!),
+            signature: validatedInput.data.signature,
+            amount: "0.1",
+          },
+        });
+
+        const taskOptions = validatedInput.data.options.map((option, index) => {
+          return {
+            image_url: option.imageUrl,
+            option_id: ++index,
+            task_id: createTaskResponse.id,
+            count: 0,
+          };
+        });
+
+        await tx.option.createMany({
+          data: taskOptions,
+        });
+
+        return createTaskResponse;
+      });
+
+      return res.json({ success: true, data: createTaskTx });
     } catch (err) {
       console.log(err);
       const message = err instanceof Error ? err.message : "An error occurred";
